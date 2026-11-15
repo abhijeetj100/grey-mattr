@@ -1,0 +1,42 @@
+# Source of truth for the labels used by the Claude workflows.
+# Synced to GitHub by .github/workflows/sync-labels.yml.
+# Labels not listed here are left alone.
+
+# Review lifecycle
+- name: claude-review-requested
+  color: "1d76db"
+  description: Add last to request a Claude review of this PR
+- name: claude-review-completed
+  color: "0e8a16"
+  description: Claude review finished successfully
+- name: claude-review-failed
+  color: "b60205"
+  description: Claude review failed; check the run log
+
+# Model selection (optional, add before claude-review-requested)
+- name: claude-model:sonnet
+  color: "c5def5"
+  description: Review with Sonnet 5.5 (default)
+- name: claude-model:opus
+  color: "c5def5"
+  description: Review with Opus 5.5
+- name: claude-model:haiku
+  color: "c5def5"
+  description: Review with Haiku 5.5
+
+# Effort selection (optional, add before claude-review-requested)
+- name: claude-effort:low
+  color: "fef2c0"
+  description: Low reasoning effort
+- name: claude-effort:medium
+  color: "fef2c0"
+  description: Medium reasoning effort (default)
+- name: claude-effort:high
+  color: "fef2c0"
+  description: High reasoning effort
+- name: claude-effort:xhigh
+  color: "fef2c0"
+  description: Extra-high reasoning effort
+- name: claude-effort:max
+  color: "fef2c0"
+  description: Maximum reasoning effort

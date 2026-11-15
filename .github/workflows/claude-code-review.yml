@@ -1,0 +1,130 @@
+name: Claude Code Review
+
+# Runs only when the `claude-review-requested` label is added to a PR.
+# Optional labels (add them BEFORE the request label):
+#   claude-model:sonnet | claude-model:opus | claude-model:haiku
+#   claude-effort:low | medium | high | xhigh | max
+# Defaults: sonnet / medium. On finish the request label is removed and
+# `claude-review-completed` (or `claude-review-failed`) is added.
+on:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  # Keyed by label so runs skipped for other labels cannot cancel a real review.
+  group: claude-review-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  cancel-in-progress: false
+
+jobs:
+  claude-review:
+    if: github.event.label.name == 'claude-review-requested'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve model and effort from labels
+        id: cfg
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          models="$(jq -r '.[] | select(startswith("claude-model:")) | sub("claude-model:";"")' <<<"$LABELS")"
+          efforts="$(jq -r '.[] | select(startswith("claude-effort:")) | sub("claude-effort:";"")' <<<"$LABELS")"
+
+          model_key="sonnet"
+          effort="medium"
+          notes=""
+
+          n_models=$(grep -c . <<<"$models" || true)
+          n_efforts=$(grep -c . <<<"$efforts" || true)
+
+          if [ "$n_models" -gt 1 ]; then
+            notes="${notes}Multiple claude-model labels found; using default (sonnet). "
+          elif [ "$n_models" -eq 1 ]; then
+            case "$models" in
+              sonnet|opus|haiku) model_key="$models" ;;
+              *) notes="${notes}Unknown claude-model label; using default (sonnet). " ;;
+            esac
+          fi
+
+          if [ "$n_efforts" -gt 1 ]; then
+            notes="${notes}Multiple claude-effort labels found; using default (medium). "
+          elif [ "$n_efforts" -eq 1 ]; then
+            case "$efforts" in
+              low|medium|high|xhigh|max) effort="$efforts" ;;
+              *) notes="${notes}Unknown claude-effort label; using default (medium). " ;;
+            esac
+          fi
+
+          # Pinned model IDs: upgrade deliberately by editing this table.
+          case "$model_key" in
+            sonnet) model="claude-sonnet-5-5" ;;
+            opus)   model="claude-opus-5-5" ;;
+            haiku)  model="claude-haiku-5-5" ;;
+          esac
+
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "effort=$effort" >> "$GITHUB_OUTPUT"
+          echo "Using model=$model effort=$effort"
+
+          if [ -n "$notes" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "Claude review: ${notes}Running with model \`$model\`, effort \`$effort\`."
+          fi
+
+          # Clear stale result labels from any previous review.
+          gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --remove-label claude-review-completed --remove-label claude-review-failed || true
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          claude_args: '--model ${{ steps.cfg.outputs.model }} --effort ${{ steps.cfg.outputs.effort }} --allowedTools "mcp__github_inline_comment__create_inline_comment"'
+
+      # Posts model, effort, time, tokens and cost as a PR comment.
+      - name: Post run summary
+        if: always() && steps.claude-review.outputs.execution_file != ''
+        env:
+          EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          MODEL: ${{ steps.cfg.outputs.model }}
+          EFFORT: ${{ steps.cfg.outputs.effort }}
+          TARGET: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .github/scripts/claude-run-footer.sh
+
+      # Always runs so the request label never gets stuck after a failure.
+      # The action can report success while skipping itself (for example when
+      # this workflow file differs from the default branch). That case leaves
+      # no execution file, so it is treated as a failure, not a completed review.
+      - name: Update labels
+        if: always()
+        env:
+          OUTCOME: ${{ steps.claude-review.outcome }}
+          EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          if [ "$OUTCOME" = "success" ] && [ -n "$EXEC_FILE" ]; then
+            result="claude-review-completed"
+          else
+            result="claude-review-failed"
+            if [ "$OUTCOME" = "success" ]; then
+              gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"                 --body "Claude review did not run: the action skipped itself (no execution file). This usually means the PR changes a Claude workflow file that differs from the default branch. See the run log: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            fi
+          fi
+          gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"             --remove-label claude-review-requested --add-label "$result"

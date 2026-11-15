@@ -1,0 +1,24 @@
+name: Sync labels
+
+# Keeps GitHub labels in step with .github/labels.yml.
+# Runs when the file changes on master, or manually from the Actions tab.
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/labels.yml
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EndBug/label-sync@v2
+        with:
+          config-file: .github/labels.yml
+          # Only create/update labels listed in the file; never delete others.
+          delete-other-labels: false
